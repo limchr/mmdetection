@@ -1,0 +1,56 @@
+Abstract
+
+
+How are samples represented in networks weights
+
+Combine aquired knowledge of two different network architectures and training schemes to generate realistic and constrained images.
+
+
+
+Generate realistic images has been a well established task in the computer vision community. Generative Adversarial Networks (GANs) are especially good in this task. However,
+they lack of controllability about what to generate. In this contribution we show how to use the discriminator of a GAN to generate a realisticly looking image
+
+Make use of the discriminators skill to determine wether an image is within the manifold of training images or not. A second gradient-based deep dream approach is 
+simultaneously optimizing the input image for containing specific objects at certain positions.
+
+Generate realistic images that have a specific arrangement of objects
+Neural networks learn how objects are in relation to each other or how they are in a specific context
+
+
+
+Deeply Dreaming about Training Data
+
+- what happens when we input the model output of an actual training data back into deep Dream?
+-- Will be the original training example reconstructed
+-- Or in other words: How much information of the original training data is stored within the weights?
+-- This relates to privacy and also to the question to what extend the model really generalizes or whether it is 'just remembering' training examples
+- Input whole output of image sequence and create cool video
+- Input image and transforms the output and put it back into the model as in https://github.com/gordicaleksa/pytorch-deepdream
+
+Deep detection Dream
+
+- Can deep detection dream generate context sensitive settings? E.g. Two persons next to each other are hugging automatically
+
+
+
+
+Approach:
+
+forward_dream in model implementieren - bild reinschicken und 
+intermediate layer output rausbekommen
+
+loss berechnen: (iou loss von bboxes array und output array berechnen)
+
+input.grad anschalten und gradienten berechnen
+
+input mit update regel manipulieren
+input zurückgeben
+
+https://paperswithcode.com/paper/stylegan-xl-scaling-stylegan-to-large-diverse
+
+very good review article (but a bit old) https://distill.pub/2017/feature-visualization/ 
+-- https://arxiv.org/pdf/1605.09304.pdf changing latent input of gan to produce images of a certain class (rather obsolete, I think there are better ways produce constrains directly from latent space)
+Object Detection Features https://arxiv.org/pdf/1502.05461.pdf
+
+Also related: sketch as prior https://link.springer.com/chapter/10.1007/978-3-030-01270-0_13
+Text as prior https://openai.com/blog/dall-e/

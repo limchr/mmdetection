@@ -8,10 +8,10 @@ from mmdet.apis import (async_inference_detector, inference_detector,
 
 def parse_args():
     parser = ArgumentParser()
-    parser.add_argument('img', help='Image file')
-    parser.add_argument('config', help='Config file')
-    parser.add_argument('checkpoint', help='Checkpoint file')
-    parser.add_argument('--out-file', default=None, help='Path to output file')
+    parser.add_argument('--img', help='Image file', default='/home/chris/data/okutama_action/samples/3.jpg')
+    parser.add_argument('--config', help='Config file', default='configs/yolox/okutama.py')
+    parser.add_argument('--checkpoint', help='Checkpoint file', default='work_dirs/converted_vanilla/latest.pth')
+    parser.add_argument('--out-file', default='demo_result.jpg', help='Path to output file')
     parser.add_argument(
         '--device', default='cuda:0', help='Device used for inference')
     parser.add_argument(

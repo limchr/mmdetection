@@ -10,6 +10,8 @@ from ...utils import log_img_scale
 from ..builder import DETECTORS
 from .single_stage import SingleStageDetector
 
+from torch.autograd import Variable
+
 
 @DETECTORS.register_module()
 class YOLOX(SingleStageDetector):
@@ -101,6 +103,54 @@ class YOLOX(SingleStageDetector):
         self._progress_in_iter += 1
 
         return losses
+
+    def forward_dream(self, img, target_feats=None, lr=0.3, ratio=0.7, gan=None):
+
+
+        img.requires_grad = True
+        feat = self.extract_feat(img)
+        # outs = self.bbox_head.forward(feat)
+        if target_feats is None:
+            target_feats = torch.zeros_like(feat[0])
+        losses = []
+        for pf,tf in zip(feat,target_feats):
+            loss_component = torch.nn.MSELoss(reduction='mean')(pf,tf)
+            losses.append(loss_component)
+        final_loss = torch.mean(torch.stack(losses))
+        final_loss.backward()
+        grad = img.grad.data
+        g_std = torch.std(grad)
+        g_mean = torch.mean(grad)
+        grad = grad - g_mean
+        grad = grad / g_std
+        img.data = img.data - lr * ratio * grad
+        img.grad.data.zero_()
+
+
+        # sr = torch.nn.functional.interpolate(img/255,size=(64,64), mode='bilinear')
+        # # sr.requires_grad = True
+        # sr.retain_grad()
+        # ganresult = gan.forward(sr)
+        # ganloss = torch.nn.MSELoss(reduction='mean')(ganresult, torch.ones_like(ganresult))
+        # ganloss.backward()
+        # gradg = sr.grad
+        # g_std = torch.std(gradg) + 0.00000000000000000000001
+        # g_mean = torch.mean(gradg)
+        # gradg = gradg - g_mean
+        # gradg = gradg / g_std
+        # gan_grad = torch.nn.functional.interpolate(gradg,size=(768,1280), mode='bilinear')
+        # img.data = img.data + lr * (1-ratio) * gan_grad
+        # sr.grad.data.zero_()
+
+
+        print(final_loss)
+        # print(ganloss)
+
+
+
+        return img
+
+        
 
     def _preprocess(self, img, gt_bboxes):
         scale_y = self._input_size[0] / self._default_input_size[0]
