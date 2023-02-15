@@ -126,31 +126,31 @@ class YOLOX(SingleStageDetector):
         img.data = img.data - lr * ratio * grad
         img.grad.data.zero_()
 
-
-        # sr = torch.nn.functional.interpolate(img/255,size=(64,64), mode='bilinear')
-        # # sr.requires_grad = True
-        # sr.retain_grad()
-        # ganresult = gan.forward(sr)
-        # ganloss = torch.nn.MSELoss(reduction='mean')(ganresult, torch.ones_like(ganresult))
-        # ganloss.backward()
-        # gradg = sr.grad
-        # g_std = torch.std(gradg) + 0.00000000000000000000001
-        # g_mean = torch.mean(gradg)
-        # gradg = gradg - g_mean
-        # gradg = gradg / g_std
-        # gan_grad = torch.nn.functional.interpolate(gradg,size=(768,1280), mode='bilinear')
-        # img.data = img.data + lr * (1-ratio) * gan_grad
-        # sr.grad.data.zero_()
-
+        sr = torch.nn.functional.interpolate(img/255,size=(64,64), mode='bilinear')
+        # sr.requires_grad = True
+        sr.retain_grad()
+        ganresult = gan.forward(sr)
+        ganloss = torch.nn.MSELoss(reduction='mean')(ganresult, torch.ones_like(ganresult))
+        ganloss.backward()
+        gradg = sr.grad
+        g_std = torch.std(gradg) + 0.00000000000000000000001
+        g_mean = torch.mean(gradg)
+        gradg = gradg - g_mean
+        gradg = gradg / g_std
+        gan_grad = torch.nn.functional.interpolate(gradg,size=(768,1280), mode='bilinear')
+        img.data = img.data + lr * (1-ratio) * gan_grad
+        sr.grad.data.zero_()
 
         print(final_loss)
         # print(ganloss)
 
-
-
         return img
 
-        
+    def forward_grid_cells(self, img):
+        feat = self.extract_feat(img)
+        return self.bbox_head.forward(feat)
+
+
 
     def _preprocess(self, img, gt_bboxes):
         scale_y = self._input_size[0] / self._default_input_size[0]

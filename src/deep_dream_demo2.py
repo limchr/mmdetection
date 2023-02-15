@@ -212,14 +212,14 @@ def main(args):
 
     from src.train_dcgan import Discriminator
     netD = Discriminator(1, nc=3, ndf=64).to(device)
-    netD.load_state_dict(torch.load('src/gan7/netD_epoch_50.pth'))
+    netD.load_state_dict(torch.load('src/out/dcgan/netD_epoch_20.pth'))
 
 
     for i in range(50000):
         model.forward_dream(img, interm_results, lr=0.003, gan=netD, ratio=0.5)
 
         if i % 100 == 0:
-            with torch.no_grad():
+            with torch.no_grad():   
                 results = model.simple_test(img, img_metas=data['img_metas'])
 
 
@@ -233,7 +233,7 @@ def main(args):
             imshowp = np.array(img.detach().cpu()).squeeze().transpose(1,2,0)
 
 
-            show_result_pyplot(model,imshowp,result=results[0],out_file='asdf2.jpg')
+            show_result_pyplot(model,imshowp,result=results[0],out_file='src/out/deep_detection_dream_result.jpg')
             # import matplotlib.pyplot as plt
             # plt.show()
 

@@ -55,6 +55,7 @@ class Generator(nn.Module):
         self.ngpu = ngpu
         self.nz = nz
         self.ngf = ngf
+        self.nc = nc
         self.main = nn.Sequential(
             # input is Z, going into a convolution
             nn.ConvTranspose2d(     self.nz, self.ngf * 8, 4, 1, 0, bias=False),
@@ -150,7 +151,7 @@ if __name__ == '__main__':
     parser.add_argument('--ngpu', type=int, default=1, help='number of GPUs to use')
     parser.add_argument('--netG', default='', help="path to netG (to continue training)")
     parser.add_argument('--netD', default='', help="path to netD (to continue training)")
-    parser.add_argument('--outf', default='./src/gan7/', help='folder to output images and model checkpoints')
+    parser.add_argument('--outf', default='./src/out/dcgan', help='folder to output images and model checkpoints')
     parser.add_argument('--manualSeed', type=int, help='manual seed')
     parser.add_argument('--classes', default='bedroom', help='comma separated list of classes for the lsun data set')
     parser.add_argument('--mps', action='store_true', default=False, help='enables macOS GPU training')
@@ -286,7 +287,7 @@ if __name__ == '__main__':
                         errD.item(), errG.item(), D_x, D_G_z1, D_G_z2))
 
 
-            if epoch % 50 == 0 and i % 300 == 0:
+            if epoch % 10 == 0 and i % 300 == 0:
                 vutils.save_image(real_cpu,
                         '%s/real_samples.png' % opt.outf,
                         normalize=True)
