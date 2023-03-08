@@ -104,45 +104,90 @@ class YOLOX(SingleStageDetector):
 
         return losses
 
-    def forward_dream(self, img, target_feats=None, lr=0.3, ratio=0.7, gan=None):
+    @staticmethod
+    def total_variation_loss(img):
+     bs_img, c_img, h_img, w_img = img.size()
+     tv_h = torch.pow(img[:,:,1:,:]-img[:,:,:-1,:], 2).sum()
+     tv_w = torch.pow(img[:,:,:,1:]-img[:,:,:,:-1], 2).sum()
+     return (tv_h+tv_w)/(bs_img*c_img*h_img*w_img)
 
 
+
+    def forward_dream(self, img, ratios, amp, target_feats=None, lr=0.3, gan=None,ampcls=None):
+        assert(sum(ratios)==1.0)
+
+        # l2 loss
         img.requires_grad = True
-        feat = self.extract_feat(img)
+        feat = self.forward_dummy(img)
         # outs = self.bbox_head.forward(feat)
         if target_feats is None:
             target_feats = torch.zeros_like(feat[0])
+        
         losses = []
-        for pf,tf in zip(feat,target_feats):
-            loss_component = torch.nn.MSELoss(reduction='mean')(pf,tf)
-            losses.append(loss_component)
-        final_loss = torch.mean(torch.stack(losses))
-        final_loss.backward()
+        # for pf,tf in zip(feat,target_feats):
+        #     for ipf,itf in zip(pf,tf):
+        #         loss_component = torch.nn.MSELoss(reduction='mean')(ipf,itf)
+        #         losses.append(loss_component)
+        
+
+        for ol in range(3):
+            mul_mask = torch.ones_like(target_feats[2][ol])
+            bin_mask = target_feats[2][ol] > 0.6
+            mul_mask[bin_mask] = amp
+            # bin_mask = target_feats[2][ol] < 0.1
+            # mul_mask[bin_mask] = 0
+            # if not ampcls is None:
+            #     clsampmask = target_feats[0][ol].argmax(axis=1) == ampcls
+            #     for ii in clsampmask.shape[-1]:
+            #         for jj in clsampmask.shape[-1]:
+            #             if clsampmask[0,ii,jj]:
+            #                 target_feats[0][ol]
+
+
+            for il in range(3):
+                sq_err = torch.square(feat[il][ol] - target_feats[il][ol])
+                sq_err *= mul_mask
+                sq_errm = torch.mean(sq_err)
+                losses.append(sq_errm)
+        final_loss = torch.mean(torch.stack(losses))        
+                
+        
+        
+        tv_loss = self.total_variation_loss(img)
+        end_loss = ratios[0] * final_loss + ratios[1] * tv_loss * 20
+        
+        
+        end_loss.backward()
         grad = img.grad.data
         g_std = torch.std(grad)
         g_mean = torch.mean(grad)
         grad = grad - g_mean
         grad = grad / g_std
-        img.data = img.data - lr * ratio * grad
+        img.data = img.data - lr * grad
         img.grad.data.zero_()
 
-        sr = torch.nn.functional.interpolate(img/255,size=(64,64), mode='bilinear')
-        # sr.requires_grad = True
-        sr.retain_grad()
-        ganresult = gan.forward(sr)
-        ganloss = torch.nn.MSELoss(reduction='mean')(ganresult, torch.ones_like(ganresult))
-        ganloss.backward()
-        gradg = sr.grad
-        g_std = torch.std(gradg) + 0.00000000000000000000001
-        g_mean = torch.mean(gradg)
-        gradg = gradg - g_mean
-        gradg = gradg / g_std
-        gan_grad = torch.nn.functional.interpolate(gradg,size=(768,1280), mode='bilinear')
-        img.data = img.data + lr * (1-ratio) * gan_grad
-        sr.grad.data.zero_()
+        # total variation loss
+        
 
-        print(final_loss)
-        # print(ganloss)
+
+        if not gan is None:
+            sr = torch.nn.functional.interpolate(img/255,size=(64,64), mode='bilinear')
+            # sr.requires_grad = True
+            sr.retain_grad()
+            ganresult = gan.forward(sr)
+            ganloss = torch.nn.MSELoss(reduction='mean')(ganresult, torch.ones_like(ganresult))
+            ganloss.backward()
+            gradg = sr.grad
+            g_std = torch.std(gradg) + 0.00000000000000000000001
+            g_mean = torch.mean(gradg)
+            gradg = gradg - g_mean
+            gradg = gradg / g_std
+            gan_grad = torch.nn.functional.interpolate(gradg,size=(768,1280), mode='bilinear')
+            img.data = img.data + lr * (1-ratio) * gan_grad
+            sr.grad.data.zero_()
+            # print(ganloss)
+
+        print('loss: %3.3f, te-loss: %3.3f, end_loss: %3.3f' % (final_loss,tv_loss,end_loss))
 
         return img
 

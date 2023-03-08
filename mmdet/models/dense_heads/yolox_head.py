@@ -250,10 +250,13 @@ class YOLOXHead(BaseDenseHead, BBoxTestMixin):
         """
         assert len(cls_scores) == len(bbox_preds) == len(objectnesses)
         cfg = self.test_cfg if cfg is None else cfg
-        scale_factors = np.array(
-            [img_meta['scale_factor'] for img_meta in img_metas])
+        if img_metas is None:
+            scale_factors = [1 for _ in range(1000)]
+        else:
+            scale_factors = np.array(
+                [img_meta['scale_factor'] for img_meta in img_metas])
 
-        num_imgs = len(img_metas)
+        num_imgs = 1
         featmap_sizes = [cls_score.shape[2:] for cls_score in cls_scores]
         mlvl_priors = self.prior_generator.grid_priors(
             featmap_sizes,
@@ -288,7 +291,7 @@ class YOLOXHead(BaseDenseHead, BBoxTestMixin):
                 scale_factors).unsqueeze(1)
 
         result_list = []
-        for img_id in range(len(img_metas)):
+        for img_id in range(1):
             cls_scores = flatten_cls_scores[img_id]
             score_factor = flatten_objectness[img_id]
             bboxes = flatten_bboxes[img_id]

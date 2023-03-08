@@ -22,11 +22,14 @@ import argparse
 import shutil
 import time
 
+from PIL import Image
+
 
 import numpy as np
 import torch
 import cv2 as cv
 
+import torchvision.datasets as dset
 
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # checking whether you have a GPU
@@ -36,8 +39,8 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # checkin
 def parse_args():
     parser = ArgumentParser()
     parser.add_argument('--img', help='Image file', default='/home/chris/data/okutama_action/samples/3.jpg')
-    parser.add_argument('--config', help='Config file', default='configs/yolox/okutama.py')
-    parser.add_argument('--checkpoint', help='Checkpoint file', default='work_dirs/converted_vanilla/latest.pth')
+    parser.add_argument('--config', help='Config file', default='configs/yolox/coco.py')
+    parser.add_argument('--checkpoint', help='Checkpoint file', default='configs/yolox/yolox_l_8x8_300e_coco_20211126_140236-d3bd2b23.pth')
     parser.add_argument('--out-file', default='src/demo_result.jpg', help='Path to output file')
     parser.add_argument(
         '--device', default='cuda:0', help='Device used for inference')
@@ -131,17 +134,17 @@ def show_result_pyplot(model,
     """
     if hasattr(model, 'module'):
         model = model.module
-    model.show_result(
+    return model.show_result(
         img,
         result,
         score_thr=score_thr,
-        show=True,
+        show=False,
         wait_time=wait_time,
         win_name=title,
         bbox_color=palette,
         text_color=(200, 200, 200),
         mask_color=palette,
-        out_file=out_file)
+        out_file=None)
 
 
 
@@ -173,76 +176,299 @@ def get_ds_sample(ds,idx):
     return img['img'][0].data, ann['bboxes'], ann['labels']
 
 
+def show_color_hist(img,nbins=50,outfile='src/out/colorhist.png'):
+    import matplotlib.pyplot as plt
+    plt.figure()
+    plt.hist(img[:,:,0].flatten(), color = "red", ec="red",bins=nbins,alpha=0.3)
+    plt.hist(img[:,:,1].flatten(), color = "green", ec="green",bins=nbins,alpha=0.3)
+    plt.hist(img[:,:,2].flatten(), color = "blue", ec="blue",bins=nbins,alpha=0.3)
+    plt.savefig(outfile)
 
-def main(args):
+
+def norm_contrast(img):
+    pt = 0.1
+    ip = np.percentile(img,q=[pt,100-pt])
+    norm = (img-ip[0])*255/(ip[1]-ip[0])
+    return norm
+
+def ten2arr(ten):
+    return np.array(ten.detach().cpu()).squeeze().transpose(1,2,0)
+
+def save_img(arr,path,resize=None):
+    im = Image.fromarray(np.array(arr,dtype=np.uint8))
+    if not resize is None:
+        im = im.resize(resize,Image.ANTIALIAS)
+    im.save(path)
+
+# Just dataset of one directory full of unlabeled images
+class unsupervised_ds(dset.ImageFolder):
+    def __init__(
+        self,
+        img_dir,
+        transform = None,
+        target_transform = None,
+    ):
+        self.img_folder = img_dir[img_dir.rfind('/')+1:]
+        super().__init__(img_dir[:img_dir.rfind('/')],transform=transform,target_transform=target_transform)
+
+    def find_classes(self, directory):
+        return (self.img_folder,{self.img_folder:0})
+import torchvision.transforms as transforms
+
+
+
+def param_visu(args):
+    sthr = 0.05
+    num_circles = 10000
+    
+    lrs = [0.001, 0.01, 0.1, 1.0, 10.0]
+    amps = [1, 10, 100, 1000]
+    ratios = [0.0, 0.25, 0.5, 0.75, 0.95]
+
+    
     # build the model from a config file and a checkpoint file
     model = init_detector(args.config, args.checkpoint, device=args.device)
+    device = next(model.parameters()).device
+
+    ds = unsupervised_ds(img_dir='src/data/param_plot',
+                        transform=transforms.Compose([
+                            transforms.Resize((640,640)),
+                            transforms.CenterCrop((640,640)),
+                            transforms.ToTensor(),
+                            # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                        ]))
+    dl = torch.utils.data.DataLoader(ds, batch_size=1,
+                                        shuffle=False, num_workers=1)
+
+    from helper import setup_clean_directory
+    setup_clean_directory('src/out/param_visu/')
+
+
+    for si, sample in enumerate(dl):
+        gs = sample[0] * 255
+        gsc = gs.cuda()
+        samp = gs.data.numpy().squeeze().transpose(1,2,0)
+
+        results_orig = model.simple_test(gsc,img_metas=None)
+
+        # gc = model.forward_grid_cells(gs)
+        # ga = model.bbox_head.get_bboxes(*gc)
+        
+        save_img(samp,'src/out/param_visu/original_%d.jpg'%(si,))
+
+
+
+        bboxes = show_result_pyplot(model,samp,result=results_orig[0],score_thr=sthr)
+        save_img(bboxes,'src/out/param_visu/original_bboxes_%d.jpg'%(si,))
+
+        # continue
+        with torch.no_grad():
+            interm_results = model.forward_dummy(gsc)
+
+
+        # from src.train_dcgan import Discriminator
+        # netD = Discriminator(1, nc=3, ndf=64).to(device)
+        # netD.load_state_dict(torch.load('src/out/dcgan/netD_epoch_20.pth'))
+
+
+
+        for lr in lrs:
+            for amp in amps:
+                for ratio in ratios:
+                    img = torch.ones_like(gsc)*128
+                    if next(model.parameters()).is_cuda:
+                        img = scatter(img, [device])[0]
+                    for i in range(num_circles):
+                        model.forward_dream(img, ratios=[1-ratio,ratio,0.0], target_feats=interm_results, lr=lr, amp=amp)
+            
+                    with torch.no_grad():   
+                        results = model.simple_test(img, img_metas=None)
+
+                    # resultsli = []
+                    # for ri,rbb in enumerate(results[0]):
+                    #     for rb in rbb:
+                    #         resultsli.append(rb + [ri])
+
+                    norm = norm_contrast(ten2arr(img))
+                    bboxes = show_result_pyplot(model,norm,result=results[0],score_thr=sthr)
+                    rrso = np.concatenate([samp,norm,bboxes],axis=1)
+                    save_img(norm,'src/out/param_visu/plain_%d_%f_%f_%d.jpg'%(si,ratio,lr,amp))
+                    save_img(bboxes,'src/out/param_visu/bboxes_%d_%f_%f_%d.jpg'%(si,ratio,lr,amp))
+                    save_img(rrso,'src/out/param_visu/combined_%d_%f_%f_%d.jpg'%(si,ratio,lr,amp))
+
+def optim_visu(args):
+    sthr = 0.05
+    num_circles = 10000
+    num_samples = 20
     
+    lr = 0.1
+    amp = 10
+    ratio = 0.25
+
+    
+    # build the model from a config file and a checkpoint file
+    model = init_detector(args.config, args.checkpoint, device=args.device)
+    device = next(model.parameters()).device
+
     ds, dl = load_dataset(model.cfg.data.val,model)
 
-    sample_idx = 0
 
-    samp = ds[sample_idx]
-    ann = ds.get_ann_info(sample_idx)
+    from helper import setup_clean_directory
+    setup_clean_directory('src/out/optim_visu/')
 
-    fn = samp['img_metas'][0].data['filename']
-    dd = dict(img_prefix=None, img_info=dict(filename=fn))
+
+    for sample_idx in range(num_samples):
+        samp = ds[sample_idx]
+        orig = samp['img'][0].data.numpy().squeeze().transpose(1,2,0)
+
+        ann = ds.get_ann_info(sample_idx)
+
+        fn = samp['img_metas'][0].data['filename']
+        dd = dict(img_prefix=None, img_info=dict(filename=fn))
+        
+
+        testpi = Compose(model.cfg.data.test.pipeline)
+
+        a = testpi(dd)
+        a['img'] = collate(a['img'], samples_per_gpu=1)
+
+        data = dict()
+        data['img_metas'] = [img_metas.data for img_metas in a['img_metas']]
+        data['imgs'] = [img.data for img in a['img'].data]
+
+        device = next(model.parameters()).device
+        if next(model.parameters()).is_cuda:
+            data = scatter(data, [device])[0]
+
+        with torch.no_grad():
+            interm_results = model.forward_dummy(data['imgs'][0])
+
+
+        from src.train_dcgan import Discriminator
+        netD = Discriminator(1, nc=3, ndf=64).to(device)
+        netD.load_state_dict(torch.load('src/out/dcgan/netD_epoch_20.pth'))
+
+        img = torch.ones_like(a['img'].data[0])*128
+        if next(model.parameters()).is_cuda:
+            img = scatter(img, [device])[0]
+        for i in range(num_circles):
+            model.forward_dream(img, ratios=[1-ratio,ratio,0.0], target_feats=interm_results, lr=lr, amp=amp)
+
+
+        with torch.no_grad():   
+            resultsorig = model.simple_test(samp['img'][0].data.unsqueeze(0).cuda(), img_metas=data['img_metas'])
+        bboxesor = show_result_pyplot(model,orig,result=resultsorig[0],score_thr=sthr)
+
+        with torch.no_grad():   
+            results = model.simple_test(img, img_metas=data['img_metas'])
+
+        # resultsli = []
+        # for ri,rbb in enumerate(results[0]):
+        #     for rb in rbb:
+        #         resultsli.append(rb + [ri])
+
+        norm = norm_contrast(ten2arr(img))
+        bboxes = show_result_pyplot(model,norm,result=results[0],score_thr=sthr)
+        rrso = np.concatenate([orig,bboxesor,norm,bboxes],axis=1)
+        save_img(orig,'src/out/optim_visu/original_%d.jpg'%(sample_idx,))
+        save_img(orig,'src/out/optim_visu/thumb_%d.jpg'%(sample_idx,),resize=(200,200))
+        save_img(bboxesor,'src/out/optim_visu/orbb_%d.jpg'%(sample_idx,))
+        save_img(norm,'src/out/optim_visu/optim_%d.jpg'%(sample_idx,))
+        save_img(bboxes,'src/out/optim_visu/opbb_%d.jpg'%(sample_idx,))
+        save_img(rrso,'src/out/optim_visu/combined_%d.jpg'%(sample_idx,))
+
+
+
+
+
+
+
+
+def video_visu(args):
+    sthr = 0.05
+    num_circles = 10000
+    save_every = 20
+    num_cls = 20
+
+
+    lr = 0.1
+    amp = 10
+    ratio = 0.25
+
     
-   
-    testpi = Compose(model.cfg.data.test.pipeline)
-
-    a = testpi(dd)
-    a['img'] = collate(a['img'], samples_per_gpu=1)
-
-    data = dict()
-    data['img_metas'] = [img_metas.data for img_metas in a['img_metas']]
-    data['imgs'] = [img.data for img in a['img'].data]
-
+    # build the model from a config file and a checkpoint file
+    model = init_detector(args.config, args.checkpoint, device=args.device)
     device = next(model.parameters()).device
-    if next(model.parameters()).is_cuda:
-        data = scatter(data, [device])[0]
+
+    ds = unsupervised_ds(img_dir='src/data/video_plot',
+                        transform=transforms.Compose([
+                            transforms.Resize(640),
+                            transforms.CenterCrop((640,640)),
+                            transforms.ToTensor(),
+                            # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                        ]))
+    dl = torch.utils.data.DataLoader(ds, batch_size=1,
+                                        shuffle=False, num_workers=1)
+
+    sample = ds[0]
+    gs = sample[0].unsqueeze(0) * 255
+    gsc = gs.cuda()
+    samp = gs.data.numpy().squeeze().transpose(1,2,0)
+
+
+    from helper import setup_clean_directory
+    setup_clean_directory('src/out/video_visu/')
+
+    initial_class_i = 0
+    optim_classes = list(range(1,num_cls))
+
 
     with torch.no_grad():
-        interm_results = model.extract_feat(data['imgs'][0])
+        interm_results = model.forward_dummy(gsc)
 
+    bool_masks = []
+    for i in range(3):
+        bool_masks.append(interm_results[0][i].argmax(axis=1) == initial_class_i)
 
-    img = torch.ones_like(a['img'].data[0])*128
+    img = torch.ones_like(gsc)*128
     if next(model.parameters()).is_cuda:
         img = scatter(img, [device])[0]
 
-    from src.train_dcgan import Discriminator
-    netD = Discriminator(1, nc=3, ndf=64).to(device)
-    netD.load_state_dict(torch.load('src/out/dcgan/netD_epoch_20.pth'))
 
+    # gc = model.forward_grid_cells(gs)
+    # ga = model.bbox_head.get_bboxes(*gc)
 
-    for i in range(50000):
-        model.forward_dream(img, interm_results, lr=0.003, gan=netD, ratio=0.5)
+    glob_count = 0
+    frame_count = 0
+    for cla in [initial_class_i]+optim_classes:
+        for i,bool_mask in enumerate(bool_masks):
+            for ii in range(interm_results[0][i].shape[-1]):
+                for jj in range(interm_results[0][i].shape[-1]):
+                    if bool_mask[0,ii,jj]:
+                        interm_results[0][i][0,:,ii,jj] = -5
+                        interm_results[0][i][0,cla,ii,jj] = 2.5
 
-        if i % 100 == 0:
-            with torch.no_grad():   
-                results = model.simple_test(img, img_metas=data['img_metas'])
+        for i in range(num_circles):
+            model.forward_dream(img, ratios=[1-ratio,ratio,0.0], target_feats=interm_results, lr=lr, amp=amp, ampcls=cla)
 
+            if glob_count % save_every == 0:
+                with torch.no_grad():   
+                    results = model.simple_test(img, img_metas=None)
 
-            # resultsli = []
-            # for ri,rbb in enumerate(results[0]):
-            #     for rb in rbb:
-            #         resultsli.append(rb + [ri])
+                # resultsli = []
+                # for ri,rbb in enumerate(results[0]):
+                #     for rb in rbb:
+                #         resultsli.append(rb + [ri])
 
-
-
-            imshowp = np.array(img.detach().cpu()).squeeze().transpose(1,2,0)
-
-
-            show_result_pyplot(model,imshowp,result=results[0],out_file='src/out/deep_detection_dream_result.jpg')
-            # import matplotlib.pyplot as plt
-            # plt.show()
-
-
-
-
-
-
-
+                norm = norm_contrast(ten2arr(img))
+                bboxes = show_result_pyplot(model,norm,result=results[0],score_thr=sthr)
+                # rrso = np.concatenate([samp,norm,bboxes],axis=1)
+                save_img(norm,'src/out/video_visu/plain_%d.jpg'%(frame_count,))
+                save_img(bboxes,'src/out/video_visu/bboxes_%d.jpg'%(frame_count,))
+                # save_img(bboxes,'src/out/param_visu/bboxes_%d_%f_%f_%d.jpg'%(si,ratio,lr,amp))
+                # save_img(rrso,'src/out/param_visu/combined_%d_%f_%f_%d.jpg'%(si,ratio,lr,amp))
+                frame_count += 1
+            glob_count += 1
 
 
 
@@ -320,4 +546,88 @@ def main(args):
 
 if __name__ == '__main__':
     args = parse_args()
-    main(args)
+    # param_visu(args)
+    # optim_visu(args)
+    video_visu(args)
+
+
+
+
+
+
+
+
+# old pipeline
+
+    # # build the model from a config file and a checkpoint file
+    # model = init_detector(args.config, args.checkpoint, device=args.device)
+    
+    # ds, dl = load_dataset(model.cfg.data.val,model)
+
+
+    # from helper import setup_clean_directory
+    # setup_clean_directory('src/out/param_visu/')
+
+
+    # for sample_idx in range(1000):
+    #     samp = ds[sample_idx]
+    #     orig = samp['img'][0].data.numpy().squeeze().transpose(1,2,0)
+
+    #     ann = ds.get_ann_info(sample_idx)
+
+    #     fn = samp['img_metas'][0].data['filename']
+    #     dd = dict(img_prefix=None, img_info=dict(filename=fn))
+        
+    
+    #     testpi = Compose(model.cfg.data.test.pipeline)
+
+    #     a = testpi(dd)
+    #     a['img'] = collate(a['img'], samples_per_gpu=1)
+
+    #     data = dict()
+    #     data['img_metas'] = [img_metas.data for img_metas in a['img_metas']]
+    #     data['imgs'] = [img.data for img in a['img'].data]
+
+    #     device = next(model.parameters()).device
+    #     if next(model.parameters()).is_cuda:
+    #         data = scatter(data, [device])[0]
+
+    #     with torch.no_grad():
+    #         interm_results = model.forward_dummy(data['imgs'][0])
+
+
+    #     from src.train_dcgan import Discriminator
+    #     netD = Discriminator(1, nc=3, ndf=64).to(device)
+    #     netD.load_state_dict(torch.load('src/out/dcgan/netD_epoch_20.pth'))
+
+    #     lrs = [0.001, 0.01, 0.1, 1.0, 10.0]
+    #     amps = [1, 10, 100, 1000]
+    #     ratios = [0.0, 0.25, 0.5, 0.75, 0.95]
+
+    #     save_img(orig,'src/out/param_visu/original_%d.jpg'%(sample_idx,))
+
+
+    #     for lr in lrs:
+    #         for amp in amps:
+    #             for ratio in ratios:
+    #                 img = torch.ones_like(a['img'].data[0])*128
+    #                 if next(model.parameters()).is_cuda:
+    #                     img = scatter(img, [device])[0]
+    #                 for i in range(10000):
+    #                     model.forward_dream(img, ratios=[1-ratio,ratio,0.0], target_feats=interm_results, lr=lr, amp=amp)
+            
+    #                 with torch.no_grad():   
+    #                     results = model.simple_test(img, img_metas=data['img_metas'])
+
+    #                 # resultsli = []
+    #                 # for ri,rbb in enumerate(results[0]):
+    #                 #     for rb in rbb:
+    #                 #         resultsli.append(rb + [ri])
+
+    #                 norm = norm_contrast(ten2arr(img))
+    #                 bboxes = show_result_pyplot(model,norm,result=results[0])
+    #                 rrso = np.concatenate([orig,norm,bboxes],axis=1)
+    #                 save_img(norm,'src/out/param_visu/plain_%d_%f_%f_%d.jpg'%(sample_idx,ratio,lr,amp))
+    #                 save_img(bboxes,'src/out/param_visu/bboxes_%d_%f_%f_%d.jpg'%(sample_idx,ratio,lr,amp))
+    #                 save_img(rrso,'src/out/param_visu/combined_%d_%f_%f_%d.jpg'%(sample_idx,ratio,lr,amp))
+
