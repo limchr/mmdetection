@@ -197,7 +197,7 @@ def ten2arr(ten):
 def save_img(arr,path,resize=None):
     im = Image.fromarray(np.array(arr,dtype=np.uint8))
     if not resize is None:
-        im = im.resize(resize,Image.ANTIALIAS)
+        im = im.resize(resize,Image.Resampling.LANCZOS)
     im.save(path)
 
 # Just dataset of one directory full of unlabeled images
@@ -295,87 +295,78 @@ def param_visu(args):
                     save_img(norm,'src/out/param_visu/plain_%d_%f_%f_%d.jpg'%(si,ratio,lr,amp))
                     save_img(bboxes,'src/out/param_visu/bboxes_%d_%f_%f_%d.jpg'%(si,ratio,lr,amp))
                     save_img(rrso,'src/out/param_visu/combined_%d_%f_%f_%d.jpg'%(si,ratio,lr,amp))
+sthr = 0.02
 
 def optim_visu(args):
-    sthr = 0.05
-    num_circles = 10000
-    num_samples = 20
+    num_circles = 3000
     
     lr = 0.1
     amp = 10
     ratio = 0.25
 
-    
     # build the model from a config file and a checkpoint file
     model = init_detector(args.config, args.checkpoint, device=args.device)
     device = next(model.parameters()).device
+    model.init_dream()
 
-    ds, dl = load_dataset(model.cfg.data.val,model)
+
+    out_dir = 'src/out/optim_visu/'
 
 
     from helper import setup_clean_directory
-    setup_clean_directory('src/out/optim_visu/')
+    setup_clean_directory(out_dir)
 
 
-    for sample_idx in range(num_samples):
-        samp = ds[sample_idx]
-        orig = samp['img'][0].data.numpy().squeeze().transpose(1,2,0)
+    ds = unsupervised_ds(img_dir='data/cocoselected/',
+                        transform=transforms.Compose([
+                            transforms.Resize((640,640)),
+                            transforms.CenterCrop((640,640)),
+                            transforms.ToTensor(),
+                            # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                        ]))
+    dl = torch.utils.data.DataLoader(ds, batch_size=1,
+                                        shuffle=False, num_workers=1)
 
-        ann = ds.get_ann_info(sample_idx)
 
-        fn = samp['img_metas'][0].data['filename']
-        dd = dict(img_prefix=None, img_info=dict(filename=fn))
+    for si, sample in enumerate(dl):
+        gs = sample[0] * 255
+        gsc = gs.cuda()
+        samp = gs.data.numpy().squeeze().transpose(1,2,0)
+
+        img = torch.ones_like(gsc)*128
+
+
+        results_orig = model.simple_test(gsc,img_metas=None)
+
+        # gc = model.forward_grid_cells(gs)
+        # ga = model.bbox_head.get_bboxes(*gc)
         
 
-        testpi = Compose(model.cfg.data.test.pipeline)
 
-        a = testpi(dd)
-        a['img'] = collate(a['img'], samples_per_gpu=1)
 
-        data = dict()
-        data['img_metas'] = [img_metas.data for img_metas in a['img_metas']]
-        data['imgs'] = [img.data for img in a['img'].data]
 
-        device = next(model.parameters()).device
-        if next(model.parameters()).is_cuda:
-            data = scatter(data, [device])[0]
-
+        # continue
         with torch.no_grad():
-            interm_results = model.forward_dummy(data['imgs'][0])
+            interm_results = model.forward_dummy(gsc)
 
-
-        from src.train_dcgan import Discriminator
-        netD = Discriminator(1, nc=3, ndf=64).to(device)
-        netD.load_state_dict(torch.load('src/out/dcgan/netD_epoch_20.pth'))
-
-        img = torch.ones_like(a['img'].data[0])*128
         if next(model.parameters()).is_cuda:
             img = scatter(img, [device])[0]
         for i in range(num_circles):
-            model.forward_dream(img, ratios=[1-ratio,ratio,0.0], target_feats=interm_results, lr=lr, amp=amp)
-
-
-        with torch.no_grad():   
-            resultsorig = model.simple_test(samp['img'][0].data.unsqueeze(0).cuda(), img_metas=data['img_metas'])
-        bboxesor = show_result_pyplot(model,orig,result=resultsorig[0],score_thr=sthr)
+            model.forward_dream(img, ratios=[1-ratio,ratio,0.0,1], target_feats=interm_results, lr=lr, amp=amp)
 
         with torch.no_grad():   
-            results = model.simple_test(img, img_metas=data['img_metas'])
+            results = model.simple_test(img, img_metas=None)
 
-        # resultsli = []
-        # for ri,rbb in enumerate(results[0]):
-        #     for rb in rbb:
-        #         resultsli.append(rb + [ri])
-
+        bboxeso = show_result_pyplot(model,samp,result=results_orig[0],score_thr=sthr)
         norm = norm_contrast(ten2arr(img))
         bboxes = show_result_pyplot(model,norm,result=results[0],score_thr=sthr)
-        rrso = np.concatenate([orig,bboxesor,norm,bboxes],axis=1)
-        save_img(orig,'src/out/optim_visu/original_%d.jpg'%(sample_idx,))
-        save_img(orig,'src/out/optim_visu/thumb_%d.jpg'%(sample_idx,),resize=(200,200))
-        save_img(bboxesor,'src/out/optim_visu/orbb_%d.jpg'%(sample_idx,))
-        save_img(norm,'src/out/optim_visu/optim_%d.jpg'%(sample_idx,))
-        save_img(bboxes,'src/out/optim_visu/opbb_%d.jpg'%(sample_idx,))
-        save_img(rrso,'src/out/optim_visu/combined_%d.jpg'%(sample_idx,))
+        rrso = np.concatenate([samp,bboxes,norm,bboxes],axis=1)
+        save_img(samp,os.path.join(out_dir,'original_%d.jpg'%(si,)))
+        save_img(samp,os.path.join(out_dir,'thumb_%d.jpg'%(si,)),resize=(200,200))
+        save_img(bboxeso,os.path.join(out_dir,'orbb_%d.jpg'%(si,)))
+        save_img(norm,os.path.join(out_dir,'optim_%d.jpg'%(si,)))
+        save_img(bboxes,os.path.join(out_dir,'opbb_%d.jpg'%(si,)))
+        # save_img(rrso,os.path.join(out_dir,'combined_%d.jpg'%(si,)))
 
 
 
@@ -472,6 +463,72 @@ def video_visu(args):
 
 
 
+
+def art_demo_video(args):
+    num_circles = 3001
+    save_every = 2
+
+
+    lr = 0.1
+    amp = 10
+    ratio = 0.7
+
+    
+    # build the model from a config file and a checkpoint file
+    model = init_detector(args.config, args.checkpoint, device=args.device)
+    device = next(model.parameters()).device
+
+    ds = unsupervised_ds(img_dir='data/art_demo_video',
+                        transform=transforms.Compose([
+                            transforms.Resize(640),
+                            transforms.CenterCrop((640,640)),
+                            transforms.ToTensor(),
+                            # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                        ]))
+    dl = torch.utils.data.DataLoader(ds, batch_size=1,
+                                        shuffle=False, num_workers=1)
+
+    from helper import setup_clean_directory
+    setup_clean_directory('src/out/art_demo_video/')
+    frame_count = 0
+
+    for si in range(len(ds)):
+        sample = ds[si]
+        gs = sample[0].unsqueeze(0) * 255
+        gsc = gs.cuda()
+        samp = gs.data.numpy().squeeze().transpose(1,2,0)
+
+        with torch.no_grad():
+            interm_results = model.forward_dummy(gsc)
+
+        img = torch.ones_like(gsc)*128
+        if next(model.parameters()).is_cuda:
+            img = scatter(img, [device])[0]
+
+
+
+        for ic in range(num_circles):
+            model.forward_dream(img, ratios=[1-ratio,ratio,0.0], target_feats=interm_results, lr=lr, amp=amp)
+
+            if ic % save_every == 0:
+                norm = norm_contrast(ten2arr(img))
+                rrso = np.concatenate([samp,norm],axis=1)
+                save_img(norm,'src/out/art_demo_video/plain_%08d.jpg'%(frame_count,))
+                save_img(rrso,'src/out/art_demo_video/concat_%08d.jpg'%(frame_count,))
+                frame_count += 1
+                if ic == num_circles-1:
+                    for _ in range(60*3):
+                        save_img(norm,'src/out/art_demo_video/plain_%08d.jpg'%(frame_count,))
+                        save_img(rrso,'src/out/art_demo_video/concat_%08d.jpg'%(frame_count,))
+                        frame_count += 1
+
+
+
+
+# ffmpeg -i "src/out/art_demo_video/%08d.jpg" -c:v libx264 -vf "fps=30,format=yuv420p" out.mp4
+
+
+
     # imgs = ['/home/chris/data/okutama_action/samples/3.jpg']
 
 
@@ -547,9 +604,9 @@ def video_visu(args):
 if __name__ == '__main__':
     args = parse_args()
     # param_visu(args)
-    # optim_visu(args)
-    video_visu(args)
-
+    optim_visu(args)
+    # video_visu(args)
+    # art_demo_video(args)
 
 
 

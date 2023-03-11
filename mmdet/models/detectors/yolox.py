@@ -11,7 +11,7 @@ from ..builder import DETECTORS
 from .single_stage import SingleStageDetector
 
 from torch.autograd import Variable
-
+from src.modelutils import Recorder
 
 @DETECTORS.register_module()
 class YOLOX(SingleStageDetector):
@@ -112,9 +112,21 @@ class YOLOX(SingleStageDetector):
      return (tv_h+tv_w)/(bs_img*c_img*h_img*w_img)
 
 
+    def init_dream(self,):
+        a = list(self.named_children())
+        backb = list(a[0][1].named_children())
+        bn0 = backb[1][1][0].bn
+        bn1 = list(backb[1][1][1].named_children())[0][1].bn
+        bn2 = list(backb[1][1][1].named_children())[1][1].bn
+        bn3 = list(backb[1][1][1].named_children())[2][1].bn
+        bn4 = list(list(backb[1][1][1].named_children())[3][1][0].named_children())[0][1].bn
+        bn5 = list(list(backb[1][1][1].named_children())[3][1][0].named_children())[1][1].bn
+        # self.bn_layers = [bn0,bn1,bn2,bn3,bn4,bn5]
+        self.bn_layers = [bn0]
+        self.recorders = [Recorder(layer, record_input = True, record_output = False, backward = False) for layer in self.bn_layers]
+
 
     def forward_dream(self, img, ratios, amp, target_feats=None, lr=0.3, gan=None,ampcls=None):
-        assert(sum(ratios)==1.0)
 
         # l2 loss
         img.requires_grad = True
@@ -123,6 +135,19 @@ class YOLOX(SingleStageDetector):
         if target_feats is None:
             target_feats = torch.zeros_like(feat[0])
         
+
+        reco = [r.recording[0].detach().clone() for r in self.recorders]
+        bn_losses = []
+        for bnout,bnl in zip(reco,self.bn_layers):
+            ans = bnout - bnl.running_mean.unsqueeze(1).unsqueeze(0).unsqueeze(2)            
+            sq = torch.square(ans)
+            sqm = torch.mean(sq)
+            bn_losses.append(sqm)
+
+
+        bnmasterloss = torch.mean(torch.stack(bn_losses))
+        bnmasterloss.requires_grad = True
+
         losses = []
         # for pf,tf in zip(feat,target_feats):
         #     for ipf,itf in zip(pf,tf):
@@ -154,8 +179,8 @@ class YOLOX(SingleStageDetector):
         
         
         tv_loss = self.total_variation_loss(img)
-        end_loss = ratios[0] * final_loss + ratios[1] * tv_loss * 20
-        
+        # end_loss = ratios[0] * final_loss + ratios[1] * tv_loss * 20 + ratios[3] * bnmasterloss * 60
+        end_loss = ratios[3] * bnmasterloss * 60
         
         end_loss.backward()
         grad = img.grad.data
@@ -187,7 +212,7 @@ class YOLOX(SingleStageDetector):
             sr.grad.data.zero_()
             # print(ganloss)
 
-        print('loss: %3.3f, te-loss: %3.3f, end_loss: %3.3f' % (final_loss,tv_loss,end_loss))
+        print('loss: %3.3f, te-loss: %3.3f, bn-loss: %3.3f, end_loss: %3.3f' % (final_loss,tv_loss*20,bnmasterloss,end_loss))
 
         return img
 
@@ -229,3 +254,5 @@ class YOLOX(SingleStageDetector):
 
         input_size = (tensor[0].item(), tensor[1].item())
         return input_size
+
+
