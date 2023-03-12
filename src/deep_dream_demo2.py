@@ -34,6 +34,8 @@ import torchvision.datasets as dset
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # checking whether you have a GPU
 
+sthr = 0.02
+from helper import setup_clean_directory
 
 
 def parse_args():
@@ -218,87 +220,75 @@ import torchvision.transforms as transforms
 
 
 def param_visu(args):
-    num_circles = 4000
-    
-    lrs = [0.001, 0.01, 0.1, 1.0]
-    amps = [1, 10, 100]
-    tva = [0.05, 0.33, 0.66, 0.95]
-    opt = [0.05, 0.33, 0.66, 0.95]
+    out_dir = 'src/out/param_visu/'
+    img_dir = 'src/data/param_plot'
+    setup_clean_directory(out_dir)
 
+    num_circles = 3000
+    lr_decay = num_circles//2
     
+    lrs = [0.01, 0.1, 1.0, 10.0]
+    amps = [1, 10, 100]
+    opt = [0.05, 0.25, 0.5, 0.75, 0.95]
+    # tva = [0.05, 0.33, 0.66, 0.95]
+    # bnl = 0
+
     # build the model from a config file and a checkpoint file
     model = init_detector(args.config, args.checkpoint, device=args.device)
     device = next(model.parameters()).device
+    model.init_dream()
 
-    ds = unsupervised_ds(img_dir='src/data/param_plot',
+    ds = unsupervised_ds(img_dir=img_dir,
                         transform=transforms.Compose([
                             transforms.Resize((640,640)),
                             transforms.CenterCrop((640,640)),
                             transforms.ToTensor(),
-                            # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
                         ]))
-    dl = torch.utils.data.DataLoader(ds, batch_size=1,
-                                        shuffle=False, num_workers=1)
-
-    from helper import setup_clean_directory
-    setup_clean_directory('src/out/param_visu/')
-    model.init_dream()
+    dl = torch.utils.data.DataLoader(ds, batch_size=1, shuffle=False, num_workers=1)
 
     for si, sample in enumerate(dl):
         gs = sample[0] * 255
         gsc = gs.cuda()
         samp = gs.data.numpy().squeeze().transpose(1,2,0)
 
-        results_orig = model.simple_test(gsc,img_metas=None)
-
-        # gc = model.forward_grid_cells(gs)
-        # ga = model.bbox_head.get_bboxes(*gc)
-        
-        save_img(samp,'src/out/param_visu/original_%d.jpg'%(si,))
-
-
-
-        bboxes = show_result_pyplot(model,samp,result=results_orig[0],score_thr=sthr)
-        save_img(bboxes,'src/out/param_visu/original_bboxes_%d.jpg'%(si,))
-
-        # continue
         with torch.no_grad():
             interm_results = model.forward_dummy(gsc)
-
-
-        # from src.train_dcgan import Discriminator
-        # netD = Discriminator(1, nc=3, ndf=64).to(device)
-        # netD.load_state_dict(torch.load('src/out/dcgan/netD_epoch_20.pth'))
+        results_orig = model.simple_test(gsc,img_metas=None)
+        save_img(samp,'src/out/param_visu/original_%d.jpg'%(si,))
+        bboxes = show_result_pyplot(model,samp,result=results_orig[0],score_thr=sthr)
+        save_img(bboxes,'src/out/param_visu/original_bboxes_%d.jpg'%(si,))
 
 
 
         for lr in lrs:
             for amp in amps:
-                for tv in tva:
                     for op in opt:
+                        tv = 1-op
                         img = torch.ones_like(gsc)*128
                         if next(model.parameters()).is_cuda:
                             img = scatter(img, [device])[0]
+                            
                         for i in range(num_circles):
+                            if i>0 and i%lr_decay==0:
+                                lr *= 0.1
+                                print('LR DECAY: '+str(lr))
                             model.forward_dream(img, ratios=[op,tv,0,0], target_feats=interm_results, lr=lr, amp=amp)
                 
                         with torch.no_grad():   
                             results = model.simple_test(img, img_metas=None)
-
                         norm = norm_contrast(ten2arr(img))
                         bboxes = show_result_pyplot(model,norm,result=results[0],score_thr=sthr)
                         rrso = np.concatenate([samp,norm,bboxes],axis=1)
                         save_img(norm,'src/out/param_visu/plain_%d_%f_%f_%f_%d.jpg'%(si,op,tv,lr,amp))
                         save_img(bboxes,'src/out/param_visu/bboxes_%d_%f_%f_%f_%d.jpg'%(si,op,tv,lr,amp))
                         save_img(rrso,'src/out/param_visu/combined_%d_%f_%f_%f_%d.jpg'%(si,op,tv,lr,amp))
-sthr = 0.02
-from helper import setup_clean_directory
 
 def optim_visu(args):
     out_dir = 'src/out/optim_visu/'
+    img_dir = 'data/cocoselected/'
     setup_clean_directory(out_dir)
 
-    num_circles = 2000
+    num_circles = 3000
     lr_decay = num_circles//3
     
     lr = 0.1
@@ -313,19 +303,13 @@ def optim_visu(args):
     device = next(model.parameters()).device
     model.init_dream()
 
-
-
-
-    ds = unsupervised_ds(img_dir='data/cocoselected/',
+    ds = unsupervised_ds(img_dir=img_dir,
                         transform=transforms.Compose([
                             transforms.Resize((640,640)),
                             transforms.CenterCrop((640,640)),
                             transforms.ToTensor(),
-                            # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
                         ]))
-    dl = torch.utils.data.DataLoader(ds, batch_size=1,
-                                        shuffle=False, num_workers=1)
-
+    dl = torch.utils.data.DataLoader(ds, batch_size=1, shuffle=False, num_workers=1)
 
     for si, sample in enumerate(dl):
         gs = sample[0] * 255
@@ -333,28 +317,19 @@ def optim_visu(args):
         samp = gs.data.numpy().squeeze().transpose(1,2,0)
 
         img = torch.ones_like(gsc)*128
-
-
+        if next(model.parameters()).is_cuda:
+            img = scatter(img, [device])[0]
+            
         results_orig = model.simple_test(gsc,img_metas=None)
-
-        # gc = model.forward_grid_cells(gs)
-        # ga = model.bbox_head.get_bboxes(*gc)
-        
-
-
-
-
-        # continue
         with torch.no_grad():
             interm_results = model.forward_dummy(gsc)
 
-        if next(model.parameters()).is_cuda:
-            img = scatter(img, [device])[0]
         for i in range(num_circles):
             if i>0 and i%lr_decay==0:
-                lr *= 1
+                lr *= 0.1
                 print('LR DECAY: '+str(lr))
             model.forward_dream(img, ratios=[rpl,tvl,0.0,bnl], target_feats=interm_results, lr=lr, amp=amp)
+
 
         with torch.no_grad():   
             results = model.simple_test(img, img_metas=None)
@@ -369,103 +344,6 @@ def optim_visu(args):
         save_img(norm,os.path.join(out_dir,'optim_%d.jpg'%(si,)))
         save_img(bboxes,os.path.join(out_dir,'opbb_%d.jpg'%(si,)))
         # save_img(rrso,os.path.join(out_dir,'combined_%d.jpg'%(si,)))
-
-
-
-
-
-
-
-
-def video_visu(args):
-    sthr = 0.05
-    num_circles = 10000
-    save_every = 20
-    num_cls = 20
-
-
-    lr = 0.1
-    amp = 10
-    ratio = 0.25
-
-    
-    # build the model from a config file and a checkpoint file
-    model = init_detector(args.config, args.checkpoint, device=args.device)
-    device = next(model.parameters()).device
-
-    ds = unsupervised_ds(img_dir='src/data/video_plot',
-                        transform=transforms.Compose([
-                            transforms.Resize(640),
-                            transforms.CenterCrop((640,640)),
-                            transforms.ToTensor(),
-                            # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-                        ]))
-    dl = torch.utils.data.DataLoader(ds, batch_size=1,
-                                        shuffle=False, num_workers=1)
-
-    sample = ds[0]
-    gs = sample[0].unsqueeze(0) * 255
-    gsc = gs.cuda()
-    samp = gs.data.numpy().squeeze().transpose(1,2,0)
-
-
-    from helper import setup_clean_directory
-    setup_clean_directory('src/out/video_visu/')
-
-    initial_class_i = 0
-    optim_classes = list(range(1,num_cls))
-
-
-    with torch.no_grad():
-        interm_results = model.forward_dummy(gsc)
-
-    bool_masks = []
-    for i in range(3):
-        bool_masks.append(interm_results[0][i].argmax(axis=1) == initial_class_i)
-
-    img = torch.ones_like(gsc)*128
-    if next(model.parameters()).is_cuda:
-        img = scatter(img, [device])[0]
-
-
-    # gc = model.forward_grid_cells(gs)
-    # ga = model.bbox_head.get_bboxes(*gc)
-
-    glob_count = 0
-    frame_count = 0
-    for cla in [initial_class_i]+optim_classes:
-        for i,bool_mask in enumerate(bool_masks):
-            for ii in range(interm_results[0][i].shape[-1]):
-                for jj in range(interm_results[0][i].shape[-1]):
-                    if bool_mask[0,ii,jj]:
-                        interm_results[0][i][0,:,ii,jj] = -5
-                        interm_results[0][i][0,cla,ii,jj] = 2.5
-
-        for i in range(num_circles):
-            model.forward_dream(img, ratios=[1-ratio,ratio,0.0], target_feats=interm_results, lr=lr, amp=amp, ampcls=cla)
-
-            if glob_count % save_every == 0:
-                with torch.no_grad():   
-                    results = model.simple_test(img, img_metas=None)
-
-                # resultsli = []
-                # for ri,rbb in enumerate(results[0]):
-                #     for rb in rbb:
-                #         resultsli.append(rb + [ri])
-
-                norm = norm_contrast(ten2arr(img))
-                bboxes = show_result_pyplot(model,norm,result=results[0],score_thr=sthr)
-                # rrso = np.concatenate([samp,norm,bboxes],axis=1)
-                save_img(norm,'src/out/video_visu/plain_%d.jpg'%(frame_count,))
-                save_img(bboxes,'src/out/video_visu/bboxes_%d.jpg'%(frame_count,))
-                # save_img(bboxes,'src/out/param_visu/bboxes_%d_%f_%f_%d.jpg'%(si,ratio,lr,amp))
-                # save_img(rrso,'src/out/param_visu/combined_%d_%f_%f_%d.jpg'%(si,ratio,lr,amp))
-                frame_count += 1
-            glob_count += 1
-
-
-
-
 
 
 
@@ -609,8 +487,8 @@ def art_demo_video(args):
 
 if __name__ == '__main__':
     args = parse_args()
-    # param_visu(args)
-    optim_visu(args)
+    param_visu(args)
+    # optim_visu(args)
     # video_visu(args)
     # art_demo_video(args)
 
