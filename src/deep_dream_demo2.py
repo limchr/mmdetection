@@ -218,12 +218,12 @@ import torchvision.transforms as transforms
 
 
 def param_visu(args):
-    sthr = 0.05
-    num_circles = 10000
+    num_circles = 4000
     
-    lrs = [0.001, 0.01, 0.1, 1.0, 10.0]
-    amps = [1, 10, 100, 1000]
-    ratios = [0.0, 0.25, 0.5, 0.75, 0.95]
+    lrs = [0.001, 0.01, 0.1, 1.0]
+    amps = [1, 10, 100]
+    tva = [0.05, 0.33, 0.66, 0.95]
+    opt = [0.05, 0.33, 0.66, 0.95]
 
     
     # build the model from a config file and a checkpoint file
@@ -242,7 +242,7 @@ def param_visu(args):
 
     from helper import setup_clean_directory
     setup_clean_directory('src/out/param_visu/')
-
+    model.init_dream()
 
     for si, sample in enumerate(dl):
         gs = sample[0] * 255
@@ -274,35 +274,39 @@ def param_visu(args):
 
         for lr in lrs:
             for amp in amps:
-                for ratio in ratios:
-                    img = torch.ones_like(gsc)*128
-                    if next(model.parameters()).is_cuda:
-                        img = scatter(img, [device])[0]
-                    for i in range(num_circles):
-                        model.forward_dream(img, ratios=[1-ratio,ratio,0.0], target_feats=interm_results, lr=lr, amp=amp)
-            
-                    with torch.no_grad():   
-                        results = model.simple_test(img, img_metas=None)
+                for tv in tva:
+                    for op in opt:
+                        img = torch.ones_like(gsc)*128
+                        if next(model.parameters()).is_cuda:
+                            img = scatter(img, [device])[0]
+                        for i in range(num_circles):
+                            model.forward_dream(img, ratios=[op,tv,0,0], target_feats=interm_results, lr=lr, amp=amp)
+                
+                        with torch.no_grad():   
+                            results = model.simple_test(img, img_metas=None)
 
-                    # resultsli = []
-                    # for ri,rbb in enumerate(results[0]):
-                    #     for rb in rbb:
-                    #         resultsli.append(rb + [ri])
-
-                    norm = norm_contrast(ten2arr(img))
-                    bboxes = show_result_pyplot(model,norm,result=results[0],score_thr=sthr)
-                    rrso = np.concatenate([samp,norm,bboxes],axis=1)
-                    save_img(norm,'src/out/param_visu/plain_%d_%f_%f_%d.jpg'%(si,ratio,lr,amp))
-                    save_img(bboxes,'src/out/param_visu/bboxes_%d_%f_%f_%d.jpg'%(si,ratio,lr,amp))
-                    save_img(rrso,'src/out/param_visu/combined_%d_%f_%f_%d.jpg'%(si,ratio,lr,amp))
+                        norm = norm_contrast(ten2arr(img))
+                        bboxes = show_result_pyplot(model,norm,result=results[0],score_thr=sthr)
+                        rrso = np.concatenate([samp,norm,bboxes],axis=1)
+                        save_img(norm,'src/out/param_visu/plain_%d_%f_%f_%f_%d.jpg'%(si,op,tv,lr,amp))
+                        save_img(bboxes,'src/out/param_visu/bboxes_%d_%f_%f_%f_%d.jpg'%(si,op,tv,lr,amp))
+                        save_img(rrso,'src/out/param_visu/combined_%d_%f_%f_%f_%d.jpg'%(si,op,tv,lr,amp))
 sthr = 0.02
+from helper import setup_clean_directory
 
 def optim_visu(args):
-    num_circles = 3000
+    out_dir = 'src/out/optim_visu/'
+    setup_clean_directory(out_dir)
+
+    num_circles = 2000
+    lr_decay = num_circles//3
     
     lr = 0.1
     amp = 10
-    ratio = 0.25
+    
+    rpl = 0.25
+    tvl = 0.75
+    bnl = 0.5
 
     # build the model from a config file and a checkpoint file
     model = init_detector(args.config, args.checkpoint, device=args.device)
@@ -310,11 +314,6 @@ def optim_visu(args):
     model.init_dream()
 
 
-    out_dir = 'src/out/optim_visu/'
-
-
-    from helper import setup_clean_directory
-    setup_clean_directory(out_dir)
 
 
     ds = unsupervised_ds(img_dir='data/cocoselected/',
@@ -352,7 +351,10 @@ def optim_visu(args):
         if next(model.parameters()).is_cuda:
             img = scatter(img, [device])[0]
         for i in range(num_circles):
-            model.forward_dream(img, ratios=[1-ratio,ratio,0.0,1], target_feats=interm_results, lr=lr, amp=amp)
+            if i>0 and i%lr_decay==0:
+                lr *= 1
+                print('LR DECAY: '+str(lr))
+            model.forward_dream(img, ratios=[rpl,tvl,0.0,bnl], target_feats=interm_results, lr=lr, amp=amp)
 
         with torch.no_grad():   
             results = model.simple_test(img, img_metas=None)
@@ -460,6 +462,10 @@ def video_visu(args):
                 # save_img(rrso,'src/out/param_visu/combined_%d_%f_%f_%d.jpg'%(si,ratio,lr,amp))
                 frame_count += 1
             glob_count += 1
+
+
+
+
 
 
 

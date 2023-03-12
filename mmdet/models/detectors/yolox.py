@@ -11,7 +11,7 @@ from ..builder import DETECTORS
 from .single_stage import SingleStageDetector
 
 from torch.autograd import Variable
-from src.modelutils import Recorder
+from src.modelutils import Recorder, get_all_layers
 
 @DETECTORS.register_module()
 class YOLOX(SingleStageDetector):
@@ -113,16 +113,25 @@ class YOLOX(SingleStageDetector):
 
 
     def init_dream(self,):
-        a = list(self.named_children())
-        backb = list(a[0][1].named_children())
-        bn0 = backb[1][1][0].bn
-        bn1 = list(backb[1][1][1].named_children())[0][1].bn
-        bn2 = list(backb[1][1][1].named_children())[1][1].bn
-        bn3 = list(backb[1][1][1].named_children())[2][1].bn
-        bn4 = list(list(backb[1][1][1].named_children())[3][1][0].named_children())[0][1].bn
-        bn5 = list(list(backb[1][1][1].named_children())[3][1][0].named_children())[1][1].bn
+        ml = get_all_layers(self)
+        self.bn_layers = []
+        for ll in ml:
+            if isinstance(ll, torch.nn.BatchNorm2d):
+                self.bn_layers.append(ll)
+        
+
+        
+        
+        # a = list(self.named_children())
+        # backb = list(a[0][1].named_children())
+        # bn0 = backb[1][1][0].bn
+        # bn1 = list(backb[1][1][1].named_children())[0][1].bn
+        # bn2 = list(backb[1][1][1].named_children())[1][1].bn
+        # bn3 = list(backb[1][1][1].named_children())[2][1].bn
+        # bn4 = list(list(backb[1][1][1].named_children())[3][1][0].named_children())[0][1].bn
+        # bn5 = list(list(backb[1][1][1].named_children())[3][1][0].named_children())[1][1].bn
         # self.bn_layers = [bn0,bn1,bn2,bn3,bn4,bn5]
-        self.bn_layers = [bn0]
+        # self.bn_layers = [bn0]
         self.recorders = [Recorder(layer, record_input = True, record_output = False, backward = False) for layer in self.bn_layers]
 
 
@@ -135,18 +144,26 @@ class YOLOX(SingleStageDetector):
         if target_feats is None:
             target_feats = torch.zeros_like(feat[0])
         
+        if False:
+            reco = [r.recording[0].clone() for r in self.recorders]
+            bn_losses = []
+            for bnout,bnl in zip(reco,self.bn_layers):
+                bn_mean = torch.mean(bnout - bnl.running_mean.unsqueeze(1).unsqueeze(0).unsqueeze(2),axis=[2,3]) - bnl.running_mean          
+                # bn_channels = bnout.mean(axis=[2,3])
+                # bn_var = torch.square(bn_channels - torch.mean(bn_channels)) - bnl.running_var
+                bn_var = torch.mean(torch.square(bnout - torch.mean(bnout)),axis=[2,3]) - bnl.running_var
 
-        reco = [r.recording[0].detach().clone() for r in self.recorders]
-        bn_losses = []
-        for bnout,bnl in zip(reco,self.bn_layers):
-            ans = bnout - bnl.running_mean.unsqueeze(1).unsqueeze(0).unsqueeze(2)            
-            sq = torch.square(ans)
-            sqm = torch.mean(sq)
-            bn_losses.append(sqm)
+                bn_mean_loss = torch.mean(torch.square(bn_mean))
+                bn_var_loss = torch.mean(torch.square(bn_var))
+
+                bn_losses.append(bn_mean_loss+bn_var_loss)
+        
+                bnmasterloss = torch.mean(torch.stack(bn_losses))
+        else:
+            bnmasterloss = 0
 
 
-        bnmasterloss = torch.mean(torch.stack(bn_losses))
-        bnmasterloss.requires_grad = True
+        # bnmasterloss.requires_grad = True
 
         losses = []
         # for pf,tf in zip(feat,target_feats):
@@ -178,9 +195,11 @@ class YOLOX(SingleStageDetector):
                 
         
         
-        tv_loss = self.total_variation_loss(img)
-        # end_loss = ratios[0] * final_loss + ratios[1] * tv_loss * 20 + ratios[3] * bnmasterloss * 60
-        end_loss = ratios[3] * bnmasterloss * 60
+        rpl_loss = ratios[0] * final_loss
+        tv_loss = ratios[1] * self.total_variation_loss(img) * 20
+        bn_loss = ratios[3] * bnmasterloss / 5000
+        end_loss = rpl_loss + tv_loss + bn_loss
+        # end_loss = ratios[3] * bnmasterloss * 60
         
         end_loss.backward()
         grad = img.grad.data
@@ -188,7 +207,15 @@ class YOLOX(SingleStageDetector):
         g_mean = torch.mean(grad)
         grad = grad - g_mean
         grad = grad / g_std
-        img.data = img.data - lr * grad
+        
+        momentum = 0.0
+        if not hasattr(self,'old_grad'):
+            self.old_grad = grad
+        grad_r = grad * (1-momentum) + momentum * self.old_grad
+        self.old_grad = grad_r.detach()
+
+        
+        img.data = img.data - lr * grad_r
         img.grad.data.zero_()
 
         # total variation loss
@@ -212,7 +239,7 @@ class YOLOX(SingleStageDetector):
             sr.grad.data.zero_()
             # print(ganloss)
 
-        print('loss: %3.3f, te-loss: %3.3f, bn-loss: %3.3f, end_loss: %3.3f' % (final_loss,tv_loss*20,bnmasterloss,end_loss))
+        print('rp-loss: %3.3f, tv-loss: %3.3f, bn-loss: %3.3f, total_loss: %3.3f' % (rpl_loss,tv_loss,bn_loss,end_loss))
 
         return img
 
