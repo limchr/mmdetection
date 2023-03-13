@@ -119,9 +119,6 @@ class YOLOX(SingleStageDetector):
             if isinstance(ll, torch.nn.BatchNorm2d):
                 self.bn_layers.append(ll)
         
-
-        
-        
         # a = list(self.named_children())
         # backb = list(a[0][1].named_children())
         # bn0 = backb[1][1][0].bn
@@ -134,17 +131,15 @@ class YOLOX(SingleStageDetector):
         # self.bn_layers = [bn0]
         self.recorders = [Recorder(layer, record_input = True, record_output = False, backward = False) for layer in self.bn_layers]
 
-
+    # ratios: target_difference, total variation, bn
     def forward_dream(self, img, ratios, amp, target_feats=None, lr=0.3, gan=None,ampcls=None):
-
-        # l2 loss
         img.requires_grad = True
         feat = self.forward_dummy(img)
-        # outs = self.bbox_head.forward(feat)
         if target_feats is None:
             target_feats = torch.zeros_like(feat[0])
         
-        if False:
+        # batch normalization loss
+        if ratios[2]>0:
             reco = [r.recording[0].clone() for r in self.recorders]
             bn_losses = []
             for bnout,bnl in zip(reco,self.bn_layers):
@@ -158,23 +153,16 @@ class YOLOX(SingleStageDetector):
 
                 bn_losses.append(bn_mean_loss+bn_var_loss)
         
-                bnmasterloss = torch.mean(torch.stack(bn_losses))
+            bnmasterloss = torch.mean(torch.stack(bn_losses))
         else:
             bnmasterloss = 0
 
 
-        # bnmasterloss.requires_grad = True
-
-        losses = []
-        # for pf,tf in zip(feat,target_feats):
-        #     for ipf,itf in zip(pf,tf):
-        #         loss_component = torch.nn.MSELoss(reduction='mean')(ipf,itf)
-        #         losses.append(loss_component)
-        
-
+        # masked loss
+        mask_losses = []
         for ol in range(3):
             mul_mask = torch.ones_like(target_feats[2][ol])
-            bin_mask = target_feats[2][ol] > 0.6
+            bin_mask = target_feats[2][ol] > 0.5
             mul_mask[bin_mask] = amp
             # bin_mask = target_feats[2][ol] < 0.1
             # mul_mask[bin_mask] = 0
@@ -185,24 +173,24 @@ class YOLOX(SingleStageDetector):
             #             if clsampmask[0,ii,jj]:
             #                 target_feats[0][ol]
 
-
             for il in range(3):
                 sq_err = torch.square(feat[il][ol] - target_feats[il][ol])
                 sq_err *= mul_mask
                 sq_errm = torch.mean(sq_err)
-                losses.append(sq_errm)
-        final_loss = torch.mean(torch.stack(losses))        
+                mask_losses.append(sq_errm)
+        final_mask_loss = torch.mean(torch.stack(mask_losses))        
                 
         
         
-        rpl_loss = ratios[0] * final_loss
+        rpl_loss = ratios[0] * final_mask_loss
         tv_loss = ratios[1] * self.total_variation_loss(img) * 20
-        bn_loss = ratios[3] * bnmasterloss / 5000
+        bn_loss = ratios[2] * bnmasterloss / 5000
         end_loss = rpl_loss + tv_loss + bn_loss
-        # end_loss = ratios[3] * bnmasterloss * 60
         
+        
+        # loss calculation
         end_loss.backward()
-        grad = img.grad.data
+        grad = img.grad
         g_std = torch.std(grad)
         g_mean = torch.mean(grad)
         grad = grad - g_mean
@@ -210,38 +198,76 @@ class YOLOX(SingleStageDetector):
         
         momentum = 0.0
         if not hasattr(self,'old_grad'):
-            self.old_grad = grad
+            self.old_grad = grad.clone()
         grad_r = grad * (1-momentum) + momentum * self.old_grad
-        self.old_grad = grad_r.detach()
+        self.old_grad = grad_r.clone().detach()
 
-        
+        # gradient descent
         img.data = img.data - lr * grad_r
         img.grad.data.zero_()
 
-        # total variation loss
-        
-
-
-        if not gan is None:
-            sr = torch.nn.functional.interpolate(img/255,size=(64,64), mode='bilinear')
-            # sr.requires_grad = True
-            sr.retain_grad()
-            ganresult = gan.forward(sr)
-            ganloss = torch.nn.MSELoss(reduction='mean')(ganresult, torch.ones_like(ganresult))
-            ganloss.backward()
-            gradg = sr.grad
-            g_std = torch.std(gradg) + 0.00000000000000000000001
-            g_mean = torch.mean(gradg)
-            gradg = gradg - g_mean
-            gradg = gradg / g_std
-            gan_grad = torch.nn.functional.interpolate(gradg,size=(768,1280), mode='bilinear')
-            img.data = img.data + lr * (1-ratio) * gan_grad
-            sr.grad.data.zero_()
-            # print(ganloss)
-
         print('rp-loss: %3.3f, tv-loss: %3.3f, bn-loss: %3.3f, total_loss: %3.3f' % (rpl_loss,tv_loss,bn_loss,end_loss))
 
-        return img
+        return img, end_loss
+
+
+
+
+
+
+
+    # ratios: target_difference, total variation, bn
+    def simple_dream(self, img, ratios, amp, target_feats=None, lr=0.3):
+        img.requires_grad = True
+        feat = self.forward_dummy(img)
+        if target_feats is None:
+            target_feats = torch.zeros_like(feat[0])
+        
+        # masked loss
+        mask_losses = []
+        for ol in range(3):
+            mul_mask = torch.ones_like(target_feats[2][ol])
+            bin_mask = target_feats[2][ol] > 0.6
+            mul_mask[bin_mask] = amp
+            for il in range(3):
+                sq_err = torch.square(feat[il][ol] - target_feats[il][ol])
+                sq_err *= mul_mask
+                sq_errm = torch.mean(sq_err)
+                mask_losses.append(sq_errm)
+        final_mask_loss = torch.mean(torch.stack(mask_losses))        
+                
+        
+        
+        rpl_loss = ratios[0] * final_mask_loss
+        tv_loss = ratios[1] * self.total_variation_loss(img) * 20
+        end_loss = rpl_loss + tv_loss
+        
+        
+        # loss calculation
+        end_loss.backward()
+        grad = img.grad
+        g_std = torch.std(grad)
+        g_mean = torch.mean(grad)
+        grad = grad - g_mean
+        grad = grad / g_std
+        
+        img.data = img.data - lr * grad
+        img.grad.data.zero_()
+
+        print('rp-loss: %3.3f, tv-loss: %3.3f, total_loss: %3.3f' % (rpl_loss,tv_loss,end_loss))
+
+        return
+
+
+
+
+
+
+
+
+
+
+
 
     def forward_grid_cells(self, img):
         feat = self.extract_feat(img)

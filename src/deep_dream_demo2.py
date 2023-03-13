@@ -224,12 +224,12 @@ def param_visu(args):
     img_dir = 'src/data/param_plot'
     setup_clean_directory(out_dir)
 
-    num_circles = 3000
-    lr_decay = num_circles//2
+    num_circles = 7000
+    lr_decay = num_circles*0.95
     
     lrs = [0.01, 0.1, 1.0, 10.0]
     amps = [1, 10, 100]
-    opt = [0.05, 0.25, 0.5, 0.75, 0.95]
+    opt = [0.05, 0.2, 0.4, 0.6, 0.8, 0.95]
     # tva = [0.05, 0.33, 0.66, 0.95]
     # bnl = 0
 
@@ -264,15 +264,34 @@ def param_visu(args):
             for amp in amps:
                     for op in opt:
                         tv = 1-op
+                        dlr = lr
                         img = torch.ones_like(gsc)*128
                         if next(model.parameters()).is_cuda:
                             img = scatter(img, [device])[0]
                             
                         for i in range(num_circles):
                             if i>0 and i%lr_decay==0:
-                                lr *= 0.1
-                                print('LR DECAY: '+str(lr))
-                            model.forward_dream(img, ratios=[op,tv,0,0], target_feats=interm_results, lr=lr, amp=amp)
+                                dlr *= 0.1
+                                print('LR DECAY: '+str(dlr))
+                            model.simple_dream(img, ratios=[op,tv], target_feats=interm_results, lr=dlr, amp=amp)
+
+
+                        # loss_count = 0
+                        # last_loss = 10000
+                        # for i in range(num_circles):
+                        #     if i>0 and i%lr_decay==0:
+                        #         dlr *= 0.1
+                        #         print('LR DECAY: '+str(dlr))
+                        #     imgr, loss = model.simple_dream(img, ratios=[op,tv], target_feats=interm_results, lr=dlr, amp=amp)
+                        #     if loss >= last_loss:
+                        #         loss_count += 1
+                        #     else:
+                        #         loss_count = 0
+                        #     last_loss = loss
+                        #     if loss_count > 20:
+                        #         break
+                          
+
                 
                         with torch.no_grad():   
                             results = model.simple_test(img, img_metas=None)
@@ -285,18 +304,18 @@ def param_visu(args):
 
 def optim_visu(args):
     out_dir = 'src/out/optim_visu/'
-    img_dir = 'data/cocoselected/'
+    img_dir = 'data/optim_visu/'
     setup_clean_directory(out_dir)
 
-    num_circles = 3000
-    lr_decay = num_circles//3
+    num_circles = 10000
+    lr_decay = num_circles//4
     
-    lr = 0.1
-    amp = 10
+    lr = 10.0
+    amp = 1
     
-    rpl = 0.25
-    tvl = 0.75
-    bnl = 0.5
+    rpl = 0.6
+    tvl = 0.4
+    bnl = 0.0
 
     # build the model from a config file and a checkpoint file
     model = init_detector(args.config, args.checkpoint, device=args.device)
@@ -312,6 +331,7 @@ def optim_visu(args):
     dl = torch.utils.data.DataLoader(ds, batch_size=1, shuffle=False, num_workers=1)
 
     for si, sample in enumerate(dl):
+        dlr = lr
         gs = sample[0] * 255
         gsc = gs.cuda()
         samp = gs.data.numpy().squeeze().transpose(1,2,0)
@@ -326,9 +346,9 @@ def optim_visu(args):
 
         for i in range(num_circles):
             if i>0 and i%lr_decay==0:
-                lr *= 0.1
-                print('LR DECAY: '+str(lr))
-            model.forward_dream(img, ratios=[rpl,tvl,0.0,bnl], target_feats=interm_results, lr=lr, amp=amp)
+                dlr *= 0.1
+                print('LR DECAY: '+str(dlr))
+            model.simple_dream(img, ratios=[rpl,tvl], target_feats=interm_results, lr=dlr, amp=amp)
 
 
         with torch.no_grad():   
@@ -345,6 +365,91 @@ def optim_visu(args):
         save_img(bboxes,os.path.join(out_dir,'opbb_%d.jpg'%(si,)))
         # save_img(rrso,os.path.join(out_dir,'combined_%d.jpg'%(si,)))
 
+
+def test(args):
+    out_dir = 'src/out/test/'
+    img_dir = 'data/coco/val2017'
+    setup_clean_directory(out_dir)
+
+    num_circles = 2000
+    lr_decay = num_circles*0.9
+    
+    lr = 0.5
+    amp = 10
+    
+    rpl = 0.40
+    tvl = 0.60
+    bnl = 0.0
+
+    # build the model from a config file and a checkpoint file
+    model = init_detector(args.config, args.checkpoint, device=args.device)
+    device = next(model.parameters()).device
+    model.init_dream()
+
+    ds = unsupervised_ds(img_dir=img_dir,
+                        transform=transforms.Compose([
+                            transforms.Resize((640,640)),
+                            transforms.CenterCrop((640,640)),
+                            transforms.ToTensor(),
+                        ]))
+    dl = torch.utils.data.DataLoader(ds, batch_size=1, shuffle=False, num_workers=1)
+
+    for si, sample in enumerate(dl):
+        dlr = lr
+        gs = sample[0] * 255
+        gsc = gs.cuda()
+        samp = gs.data.numpy().squeeze().transpose(1,2,0)
+
+        # img = gsc.clone()
+        img = torch.ones_like(gsc)*128
+
+        if next(model.parameters()).is_cuda:
+            img = scatter(img, [device])[0]
+            
+        results_orig = model.simple_test(gsc,img_metas=None)
+        with torch.no_grad():
+            interm_results = model.forward_dummy(gsc)
+
+        # for i1,ir in enumerate(interm_results):
+        #     for i2,iir in enumerate(ir):
+        #         interm_results[i1][i2] *= 0
+        #         interm_results[i1][i2] -= 1
+
+        # interm_results[2][2] -= 10
+        # interm_results[2][1] -= 10
+        # interm_results[2][0] -= 10
+        
+        # # save_img(interm_results[2][2].squeeze().cpu(),'src/out/test.jpg')
+        # interm_results[2][2][0,0,10,10] = 2.5
+        # interm_results[0][2][0,0,10,10] = 2.5
+        # interm_results[1][2][0,0,10,10] = 0.5
+        # interm_results[1][2][0,1,10,10] = 0.5
+        # interm_results[1][2][0,2,10,10] = 0.7
+        # interm_results[1][2][0,3,10,10] = 0.7
+
+
+
+
+        for i in range(num_circles):
+            if i>0 and i%lr_decay==0:
+                dlr *= 0.1
+                print('LR DECAY: '+str(dlr))
+            model.simple_dream(img, ratios=[rpl,tvl], target_feats=interm_results, lr=dlr, amp=amp)
+
+
+        with torch.no_grad():   
+            results = model.simple_test(img, img_metas=None)
+
+        bboxeso = show_result_pyplot(model,samp,result=results_orig[0],score_thr=sthr)
+        norm = norm_contrast(ten2arr(img))
+        bboxes = show_result_pyplot(model,norm,result=results[0],score_thr=sthr)
+        rrso = np.concatenate([samp,bboxes,norm,bboxes],axis=1)
+        save_img(samp,os.path.join(out_dir,'%d_original.jpg'%(si,)))
+        save_img(samp,os.path.join(out_dir,'%d_thumb.jpg'%(si,)),resize=(200,200))
+        save_img(bboxeso,os.path.join(out_dir,'%d_orbb.jpg'%(si,)))
+        save_img(norm,os.path.join(out_dir,'%d_optim.jpg'%(si,)))
+        save_img(bboxes,os.path.join(out_dir,'%d_opbb.jpg'%(si,)))
+        # save_img(rrso,os.path.join(out_dir,'%d_combined.jpg'%(si,)))
 
 
 
@@ -404,6 +509,69 @@ def art_demo_video(args):
                     for _ in range(60*3):
                         save_img(norm,'src/out/art_demo_video/plain_%08d.jpg'%(frame_count,))
                         save_img(rrso,'src/out/art_demo_video/concat_%08d.jpg'%(frame_count,))
+                        frame_count += 1
+
+
+
+def articlevideo(args):
+    out_path = 'src/out/newvideo/'
+    in_dir = 'data/articlevideo'
+    num_circles = 5000
+    save_every = 2
+
+
+    lr = 0.1
+    amp = 10
+    rpl = 0.4
+    tv = 0.6
+
+    
+    # build the model from a config file and a checkpoint file
+    model = init_detector(args.config, args.checkpoint, device=args.device)
+    device = next(model.parameters()).device
+
+    ds = unsupervised_ds(img_dir=in_dir,
+                        transform=transforms.Compose([
+                            transforms.Resize(640),
+                            transforms.CenterCrop((640,640)),
+                            transforms.ToTensor(),
+                            # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                        ]))
+    dl = torch.utils.data.DataLoader(ds, batch_size=1,
+                                        shuffle=False, num_workers=1)
+
+    from helper import setup_clean_directory
+    setup_clean_directory(out_path)
+    frame_count = 0
+
+    for si in range(len(ds)):
+        sample = ds[si]
+        gs = sample[0].unsqueeze(0) * 255
+        gsc = gs.cuda()
+        samp = gs.data.numpy().squeeze().transpose(1,2,0)
+
+        with torch.no_grad():
+            interm_results = model.forward_dummy(gsc)
+
+        img = torch.ones_like(gsc)*128
+        if next(model.parameters()).is_cuda:
+            img = scatter(img, [device])[0]
+
+
+
+        for ic in range(num_circles):
+            model.simple_dream(img, ratios=[rpl,tv,0.0], target_feats=interm_results, lr=lr, amp=amp)
+
+            if ic % save_every == 0:
+                norm = norm_contrast(ten2arr(img))
+                rrso = np.concatenate([samp,norm],axis=1)
+                save_img(norm,os.path.join(out_path,'plain_%08d.jpg'%(frame_count,)))
+                save_img(rrso,os.path.join(out_path,'concat_%08d.jpg'%(frame_count,)))
+                frame_count += 1
+                if ic == num_circles-1:
+                    for _ in range(60*3):
+                        save_img(norm,os.path.join(out_path,'plain_%08d.jpg'%(frame_count,)))
+                        save_img(rrso,os.path.join(out_path,'concat_%08d.jpg'%(frame_count,)))
                         frame_count += 1
 
 
@@ -487,10 +655,12 @@ def art_demo_video(args):
 
 if __name__ == '__main__':
     args = parse_args()
-    param_visu(args)
-    # optim_visu(args)
+    # param_visu(args)
+    # param_visu(args)
+    # articlevideo(args)
     # video_visu(args)
     # art_demo_video(args)
+    test(args)
 
 
 
